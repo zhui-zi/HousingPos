@@ -17,6 +17,11 @@ using System.Diagnostics;
 using System.Globalization;
 using Dalamud.Utility;
 using Dalamud.Logging;
+using Dalamud.Interface.Textures.TextureWraps;
+using Dalamud.Interface.Textures;
+using Dalamud.Plugin.Services;
+using ImGuiScene;
+using static System.Net.Mime.MediaTypeNames;
 
 namespace HousingPos.Gui
 {
@@ -58,44 +63,115 @@ namespace HousingPos.Gui
         }
 
         #region Helper Functions
-        public void DrawIcon(ushort icon, Vector2 size)
+        public record TextureEntry(
+        IDalamudTextureWrap? SharedResource = null,
+        Task<IDalamudTextureWrap>? Api10 = null,
+        GameIconLookup? Api10ImmGameIcon = null,
+        string? Api10ImmGamePath = null,
+        string? Api10ImmFile = null,
+        (Assembly Assembly, string Name)? Api10ImmManifestResource = null) : IDisposable
+        {
+            private static int idCounter;
+
+            public int Id { get; } = idCounter++;
+
+            public void Dispose()
+            {
+                this.SharedResource?.Dispose();
+                _ = this.Api10?.ToContentDisposedTask();
+            }
+
+            public string? DescribeError()
+            {
+                if (this.SharedResource is not null)
+                    return "Unknown error";
+                if (this.Api10 is not null)
+                {
+                    return !this.Api10.IsCompleted
+                               ? null
+                               : this.Api10.Exception?.ToString() ?? (this.Api10.IsCanceled ? "Canceled" : "Unknown error");
+                }
+
+                if (this.Api10ImmGameIcon is not null)
+                    return "Must not happen";
+                if (this.Api10ImmGamePath is not null)
+                    return "Must not happen";
+                if (this.Api10ImmFile is not null)
+                    return "Must not happen";
+                if (this.Api10ImmManifestResource is not null)
+                    return "Must not happen";
+                return "Not implemented";
+            }
+
+            public IDalamudTextureWrap? GetTexture(ITextureProvider tp)
+            {
+                if (this.SharedResource is not null)
+                    return this.SharedResource;
+                if (this.Api10 is not null)
+                    return this.Api10.IsCompletedSuccessfully ? this.Api10.Result : null;
+                if (this.Api10ImmGameIcon is not null)
+                    return tp.GetFromGameIcon(this.Api10ImmGameIcon.Value).GetWrapOrEmpty();
+                if (this.Api10ImmGamePath is not null)
+                    return tp.GetFromGame(this.Api10ImmGamePath).GetWrapOrEmpty();
+                if (this.Api10ImmFile is not null)
+                    return tp.GetFromFile(this.Api10ImmFile).GetWrapOrEmpty();
+                if (this.Api10ImmManifestResource is not null)
+                {
+                    return tp.GetFromManifestResource(
+                        this.Api10ImmManifestResource.Value.Assembly,
+                        this.Api10ImmManifestResource.Value.Name).GetWrapOrEmpty();
+                }
+
+                return null;
+            }
+
+            public async Task<IDalamudTextureWrap> CreateNewTextureWrapReference(ITextureProvider tp)
+            {
+                while (true)
+                {
+                    if (this.GetTexture(tp) is { } textureWrap)
+                        return textureWrap.CreateWrapSharingLowLevelResource();
+                    if (this.DescribeError() is { } err)
+                        throw new(err);
+                    await System.Threading.Tasks.Task.Delay(100);
+                }
+            }
+
+            public TextureEntry CreateFromSharedLowLevelResource(ITextureProvider tp) =>
+                new() { SharedResource = this.GetTexture(tp)?.CreateWrapSharingLowLevelResource() };
+
+            public override string ToString()
+            {
+                if (this.SharedResource is not null)
+                    return $"{nameof(this.SharedResource)}: {this.SharedResource}";
+                if (this.Api10 is { IsCompletedSuccessfully: true })
+                    return $"{nameof(this.Api10)}: {this.Api10.Result}";
+                if (this.Api10 is not null)
+                    return $"{nameof(this.Api10)}: {this.Api10}";
+                if (this.Api10ImmGameIcon is not null)
+                    return $"{nameof(this.Api10ImmGameIcon)}: {this.Api10ImmGameIcon}";
+                if (this.Api10ImmGamePath is not null)
+                    return $"{nameof(this.Api10ImmGamePath)}: {this.Api10ImmGamePath}";
+                if (this.Api10ImmFile is not null)
+                    return $"{nameof(this.Api10ImmFile)}: {this.Api10ImmFile}";
+                if (this.Api10ImmManifestResource is not null)
+                    return $"{nameof(this.Api10ImmManifestResource)}: {this.Api10ImmManifestResource}";
+                return "Not implemented";
+            }
+        }
+
+
+        public static void DrawIcon(ushort icon, Vector2 size)
         {
             if (icon < 65000)
             {
-                if (Plugin.TextureDictionary.ContainsKey(icon))
+                if (HousingPos.TextureProvider.TryGetFromGameIcon(new GameIconLookup(icon), out var iconTexture))
                 {
-                    var tex = Plugin.TextureDictionary[icon];
-                    if (tex == null || tex.ImGuiHandle == IntPtr.Zero)
+                    HousingPos.PluginLog.Debug($"found icon ##{icon}");
+                    if (iconTexture.TryGetWrap(out var tex, out var except))
                     {
-                        ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(1, 0, 0, 1));
-                        ImGui.BeginChild("FailedTexture", size);
-                        ImGui.Text(icon.ToString());
-                        ImGui.EndChild();
-                        ImGui.PopStyleColor();
+                        ImGui.Image(tex.ImGuiHandle, size);
                     }
-                    else
-                        ImGui.Image(Plugin.TextureDictionary[icon].ImGuiHandle, size);
-                }
-                else
-                {
-                    ImGui.BeginChild("WaitingTexture", size, true);
-                    ImGui.EndChild();
-
-                    Plugin.TextureDictionary[icon] = null;
-
-                    Task.Run(() =>
-                    {
-                        try
-                        {
-                            var iconTex = HousingPos.Data.GetIcon(icon);
-                            var tex = HousingPos.Interface.UiBuilder.LoadImageRaw(iconTex.GetRgbaImageData(), iconTex.Header.Width, iconTex.Header.Height, 4);
-                            if (tex != null && tex.ImGuiHandle != IntPtr.Zero)
-                                Plugin.TextureDictionary[icon] = tex;
-                        }
-                        catch
-                        {
-                        }
-                    });
                 }
             }
         }
@@ -732,7 +808,7 @@ namespace HousingPos.Gui
             if (ImGui.Button(_localizer.Localize("Import") + "##" + uniqueId))
             {
                 Config.LocationId = cloudMap.LocationId;
-                PluginLog.Log(cloudMap.Hash);
+                HousingPos.PluginLog.Info(cloudMap.Hash);
                 if (cloudMap.Hash != "")
                 {
                     Task<string> cloudItems = HttpPost.GetItems(Config.DefaultCloudUri, cloudMap.Hash);

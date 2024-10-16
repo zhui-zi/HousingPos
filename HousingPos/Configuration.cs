@@ -48,9 +48,9 @@ namespace HousingPos
         public DateTime lastPosPackageTime = DateTime.Now;
         #region Init and Save
 
-        [NonSerialized] private DalamudPluginInterface _pluginInterface;
+        [NonSerialized] private IDalamudPluginInterface _pluginInterface;
 
-        public void Initialize(DalamudPluginInterface pluginInterface)
+        public void Initialize(IDalamudPluginInterface pluginInterface)
         {
             _pluginInterface = pluginInterface;
         }

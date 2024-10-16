@@ -16,6 +16,8 @@ using Dalamud.IoC;
 using Dalamud.Game.ClientState;
 using Dalamud.Data;
 using Dalamud.Logging;
+using Dalamud.Plugin.Services;
+using Dalamud.Interface.Textures.TextureWraps;
 
 namespace HousingPos
 {
@@ -29,28 +31,36 @@ namespace HousingPos
 
 
         [PluginService]
-        public static CommandManager CommandManager { get; private set; }
+        public static ICommandManager CommandManager { get; private set; }
         [PluginService]
-        public static Framework Framework { get; private set; }
+        public static IFramework Framework { get; private set; }
         [PluginService]
-        public static SigScanner SigScanner { get; private set; }
+        public static ISigScanner SigScanner { get; private set; }
         [PluginService]
-        public static DalamudPluginInterface Interface { get; private set; }
+        public static IDalamudPluginInterface Interface { get; private set; }
         [PluginService]
-        public static GameGui GameGui { get; private set; }
+        public static IGameGui GameGui { get; private set; }
         [PluginService]
-        public static ChatGui ChatGui { get; private set; }
+        public static IChatGui ChatGui { get; private set; }
         [PluginService]
-        public static ClientState ClientState { get; private set; }
+        public static IClientState ClientState { get; private set; }
         [PluginService]
-        public static DataManager Data { get; private set; }
+        public static IDataManager Data { get; private set; }
         [PluginService]
-        public SigScanner Scanner { get; private set; }
+        public static ISigScanner Scanner { get; private set; }
+        [PluginService]
+        public static IPluginLog PluginLog { get; private set; }
+
+        [PluginService]
+        public static IGameInteropProvider GameInteropProvider { get; private set; }
+
+        [PluginService]
+        public static ITextureProvider TextureProvider { get; private set; }
 
         private Localizer _localizer;
 
         // Texture dictionary for the housing item icons.
-        public readonly Dictionary<ushort, TextureWrap> TextureDictionary = new Dictionary<ushort, TextureWrap>();
+        public readonly Dictionary<ushort, IDalamudTextureWrap> TextureDictionary = new Dictionary<ushort, IDalamudTextureWrap>();
 
         private bool threadRunning = false;
 
@@ -107,24 +117,17 @@ namespace HousingPos
         }
         public void Initialize()
         {
-            UIFunc = Scanner.ScanText("E8 ?? ?? ?? ?? 89 77 04") + 5;
-            LoadHousingFunc = Scanner.ScanText("48 8B 41 08 48 85 C0 74 09 48 8D 48 10");
+            UIFunc = Scanner.ScanText("E8 ?? ?? ?? ?? 44 89 7F 04") + 5;
+            LoadHousingFunc = Scanner.ScanText("48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 41 56 48 83 EC 20 48 8B 71 08 48 8B FA");
             //LoadHouFurFunc = Interface.TargetModuleScanner.ScanText("48 8B FA 0F 97 C3") - 0xE;
 
-            UIFuncHook = new Hook<UIFuncDelegate>(
-                UIFunc,
-                new UIFuncDelegate(UIFuncDetour)
-            );
-            LoadHousingFuncHook = new Hook<LoadHousingFuncDelegate>(
-                LoadHousingFunc,
-                new LoadHousingFuncDelegate(LoadHousingFuncDetour)
-            );
+            UIFuncHook = GameInteropProvider.HookFromAddress<UIFuncDelegate>(UIFunc, UIFuncDetour);
+            LoadHousingFuncHook = GameInteropProvider.HookFromAddress<LoadHousingFuncDelegate>(LoadHousingFunc, LoadHousingFuncDetour);
+
             /*
-            LoadHouFurFuncHook = new Hook<LoadHouFurFuncDelegate>(
-                LoadHouFurFunc,
-                new LoadHouFurFuncDelegate(LoadHouFurFuncDetour)
-            );
+            LoadHouFurFuncHook = GameInteropProvider.HookFromAddress<LoadHouFurFunc>(LoadHouFurFuncDelegate, LoadHouFurFuncDetour);
             */
+
             UIFuncHook.Enable();
             LoadHousingFuncHook.Enable();
             //LoadHouFurFuncHook.Enable();
@@ -197,7 +200,7 @@ namespace HousingPos
 
         public void LoadHouFurFuncDetour(Int64 a1, IntPtr a2)
         {
-            PluginLog.Log($"a1:{a1:X} a2:{a2:X}");
+            HousingPos.PluginLog.Info($"a1:{a1:X} a2:{a2:X}");
             this.LoadHouFurFuncHook.Original(a1, a2);
         }
 
@@ -301,7 +304,7 @@ namespace HousingPos
                                         itemBytes[2] = 1;
                                         break;
                                     default:
-                                        PluginLog.Log($"ignore {furniture.Item.Value.Name}:{furniture.CustomTalk.Value.Name}");
+                                        HousingPos.PluginLog.Info($"ignore {furniture.Item.Value.Name}:{furniture.CustomTalk.Value.Name}");
                                         Array.Copy(itemBytes, 0, posArr, i, 24);
                                         count--;
                                         continue;
@@ -354,12 +357,12 @@ namespace HousingPos
 #if DEBUG
                 byte[] tmpArr = new byte[24];
                 Array.Copy(posArr, i, tmpArr, 0, 24);
-                PluginLog.Log($"{item.Name}:" + (BitConverter.ToString(tmpArr).Replace("-", " ")));
+                HousingPos.PluginLog.Debug($"{item.Name}:" + (BitConverter.ToString(tmpArr).Replace("-", " ")));
                 if (furniture.CustomTalk.Row > 0 || furniture.Item.Value.Name.ToString().EndsWith("空白隔离墙"))
                 {
                     string talk = furniture.CustomTalk.Value.Name;
-                    PluginLog.Log($"FurnitureTalk {furniture.Item.Value.Name}: {talk}");
-                    PluginLog.Log(BitConverter.ToString(tmpArr).Replace("-", " "));
+                    HousingPos.PluginLog.Debug($"FurnitureTalk {furniture.Item.Value.Name}: {talk}");
+                    HousingPos.PluginLog.Debug(BitConverter.ToString(tmpArr).Replace("-", " "));
                 }
 #endif
 
@@ -384,7 +387,7 @@ namespace HousingPos
             // Log($"Load {cnt} furnitures.");
             return this.LoadHousingFuncHook.Original(a1, a2);
         }
-        private void TerritoryChanged(object sender, ushort e)
+        private void TerritoryChanged(ushort e)
         {
             Config.DrawScreen = false;
             Config.Save();
@@ -404,14 +407,14 @@ namespace HousingPos
         {
             //if (!Config.PrintMessage) return;
             var msg = $"[{Name}] {message}";
-            PluginLog.Log(detail_message == "" ? msg : detail_message);
+            HousingPos.PluginLog.Info(detail_message == "" ? msg : detail_message);
             ChatGui.Print(msg);
         }
         public void LogError(string message, string detail_message = "")
         {
             //if (!Config.PrintError) return;
             var msg = $"[{Name}] {message}";
-            PluginLog.LogError(detail_message == "" ? msg : detail_message);
+            HousingPos.PluginLog.Error(detail_message == "" ? msg : detail_message);
             ChatGui.PrintError(msg);
         }
         public void OnNetwork(IntPtr dataPtr, ushort opCode, uint sourceActorId, uint targetActorId, NetworkMessageDirection direction)
